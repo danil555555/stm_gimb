@@ -1,0 +1,2 @@
+../Core/Src/drv8302.c:10:9:foc_callback	104	static
+../Core/Src/drv8302.c:34:7:foc_direct	88	static
