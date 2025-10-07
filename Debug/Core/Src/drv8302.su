@@ -1,2 +1,4 @@
-../Core/Src/drv8302.c:10:9:foc_callback	104	static
-../Core/Src/drv8302.c:34:7:foc_direct	88	static
+../Core/Src/drv8302.c:40:7:LPF_current_q	32	static
+../Core/Src/drv8302.c:52:7:LPF_current_d	32	static
+../Core/Src/drv8302.c:64:9:foc_callback	120	static
+../Core/Src/drv8302.c:95:7:foc_direct	104	static

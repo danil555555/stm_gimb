@@ -1,2 +1,2 @@
-../Core/Src/as5048a.c:14:10:AS5048_Transfer	32	static
-../Core/Src/as5048a.c:28:7:AS5048_ReadAngle	16	static
+../Core/Src/as5048a.c:13:10:AS5048_Transfer	32	static
+../Core/Src/as5048a.c:26:10:AS5048_ReadAngle	16	static

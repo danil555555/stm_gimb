@@ -10,8 +10,11 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "main.h"
 
 typedef struct {
+	float value1;
+	float value2;
     float id_callback;
     float iq_callback;
 } Current;
@@ -23,7 +26,7 @@ typedef struct {
 } Phasa;
 
 Current foc_callback(uint16_t adc1_value, uint16_t adc2_value, float angle);
-Phasa foc_direct(float id_ref, float iq_ref, float angle_electric_rad);
+Phasa foc_direct(float id_ref, float iq_ref, float angle_electric_rad, TIM_HandleTypeDef *htim);
 
 
 #endif /* INC_DRV8302_H_ */
