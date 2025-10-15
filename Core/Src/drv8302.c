@@ -66,8 +66,8 @@ Current foc_callback(uint16_t adc1_value, uint16_t adc2_value, float theta_elect
 	Current current;
 	float voltageA = (adc1_value/4095.0) * 3.265 - 3.265/2.0;
     float voltageB = (adc2_value/4095.0) * 3.265 - 3.265/2.0;
-	float currentA_measure = voltageA/(0.05 * 10.0);
-	float currentB_measure = voltageB/(0.05 * 10.0);
+	float currentA_measure = voltageA/(0.005 * 40.0);
+	float currentB_measure = voltageB/(0.005 * 40.0);
 
     current.value1 = currentA_measure;
 	current.value2 = currentB_measure;

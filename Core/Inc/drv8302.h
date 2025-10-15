@@ -10,7 +10,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
-#include "main.h"
+#include "stm32f4xx_hal.h"
 
 typedef struct {
 	float value1;

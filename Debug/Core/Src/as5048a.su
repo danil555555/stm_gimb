@@ -1,2 +1,10 @@
-../Core/Src/as5048a.c:13:10:AS5048_Transfer	32	static
-../Core/Src/as5048a.c:26:10:AS5048_ReadAngle	16	static
+../Core/Src/as5048a.c:16:10:AS5048_Transfer	32	static
+../Core/Src/as5048a.c:29:10:AS5048_ReadAngle	16	static
+../Core/Src/as5048a.c:37:7:_normalizeAngle	16	static
+../Core/Src/as5048a.c:47:6:Sensor_Init	16	static
+../Core/Src/as5048a.c:54:6:SensorUpdate	24	static
+../Core/Src/as5048a.c:70:7:electricalAngle	4	static
+../Core/Src/as5048a.c:73:7:NowAngle	4	static
+../Core/Src/as5048a.c:77:7:Sensor_GetAngleRad	4	static
+../Core/Src/as5048a.c:81:7:Sensor_GetFullRotations	4	static
+../Core/Src/as5048a.c:87:6:alignSensor	8	static

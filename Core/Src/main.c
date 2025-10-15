@@ -25,6 +25,8 @@
 #include "stdio.h"
 #include "usbd_cdc_if.h"
 #include "drv8302.h"
+#include "mpu6050.h"
+#include "as5048a.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,16 +48,16 @@
 #define MOTOR_POLE_PAIRS 14  // например, если мотор 14 полюсов
 
 
+float kalman_angle;
 float angle;
 uint16_t angle_raw;
 float raw;
-Phasa phasa;
-Current current;
+float speed;
+float prev_angle;
 uint16_t adc_val1;
 uint16_t adc_val2;
 float integrald = 0.0f;
 float integralq = 0.0f;
-float dt = 0.0001;
 float angle_electric_rad;
 Phasa phasa;
 uint16_t adc1 =0 , adc2 = 0, adc3 = 0;
@@ -64,9 +66,9 @@ Current current;
 volatile uint8_t usb_rx_flag = 0;
 uint8_t usb_rx_buffer[64];
 uint32_t usb_rx_length = 0;
-float Kp = 0.8;
-float Kp_d = 0.8;
-float Ki = 0;
+float Kp = 0.30;
+float Kp_d = 0.30;
+float Ki = 0.0;
 float zero_mechanical_angle = 0.0f;
 uint8_t sensor_initialized = 0;
 float mech_angle = 0.0f;
@@ -75,22 +77,26 @@ float angular_velocity = 0.0f;
 float prev_mech_angle = 0.0f;
 float mechDeg = 0.0f;
 float elecDeg = 0.0f;
-
+float iq_ref;
 float vd;
 float vq;
-float dt;
+uint32_t prev_ticks = 0;
+float dt_pid;
+float dt = 0.001;
+uint32_t last_tick = 0;
 
-static float prev_angle_rad  = 0.0f;
-static float full_rotations  = 0.0f;
-static float zero_electric_angle = 0.0f;
-static float now_angle = 0.0f;
-static float angle_el = 0.0f;
-
-
-static int pole_pairs = 14;
-static int sensor_direction = 1; //(1 or -1)
-
-
+float kp = 10;
+float ki = 0.0;
+float angle_now;
+float angle_ref;
+float iq_ref;
+uint32_t timer2;
+uint32_t timer1;
+float kp_speed = 0.8;
+float ki_speed = 0.0;
+float integral_angle_d = 0.0;
+float integral_speed_d = 0.0;
+float speed_ref;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -102,6 +108,8 @@ static int sensor_direction = 1; //(1 or -1)
 ADC_HandleTypeDef hadc1;
 ADC_HandleTypeDef hadc2;
 ADC_HandleTypeDef hadc3;
+
+I2C_HandleTypeDef hi2c1;
 
 SPI_HandleTypeDef hspi1;
 
@@ -119,48 +127,14 @@ static void MX_ADC2_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_ADC3_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
+
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-float _normalizeAngle(float angle) {
-    while (angle > 2.0f * (float)M_PI) {
-        angle -= 2.0f * (float)M_PI;
-    }
-    while (angle < 0) {
-        angle += 2.0f * (float)M_PI;
-    }
-    return angle;
-}
-
-void Sensor_Init()
-{
-    float mecAngleNum   = AS5048_ReadAngle() / 8192.0f * 360.0f;
-    prev_angle_rad      = mecAngleNum * M_PI / 180.0f;
-    full_rotations      = 0.0f;
-}
-
-void SensorUpdate()
-{
-    float mecAngleNum   = AS5048_ReadAngle() / 8192.0f * 360.0f;
-    float angle_rad = mecAngleNum * M_PI / 180.0f;
-
-    float delta_angle = angle_rad - prev_angle_rad;
-    if (fabsf(delta_angle) > 0.8f * 2.0f * (float)M_PI) {
-        full_rotations += (delta_angle > 0.0f) ? -1 : 1;
-    }
-    prev_angle_rad = angle_rad;
-
-    angle_el = _normalizeAngle( (float)(sensor_direction * pole_pairs) * prev_angle_rad  - zero_electric_angle );
-
-    now_angle = ( ( 2.0f * (float)M_PI ) * full_rotations ) + prev_angle_rad;
-}
-
-float electricalAngle(void){
-	return angle_el;
-}
 
 float PI_Controller_Iq(float iq_ref, float iq_callback )
 {
@@ -181,27 +155,37 @@ float PI_Controller_Id(float id_ref, float id_callback )
 	float output;
 	err = id_ref - id_callback;
 	integrald += err*dt;
-	output = Kp_d*err + Ki*integrald;
+	output = Kp*err + Ki*integrald;
 	//if(output<-0.5) output = -0.5;
 	//if(output > 0.5) output = 0.5;
 	//if(output < pid->min) output = pid->min;
 	return output;
 }
 
-void send_usb_message(const char *msg)
+float PID_Controller_Angle(float angle_ref, float angle)
 {
-
-    CDC_Transmit_FS((uint8_t*)msg, strlen(msg));
+	float err;
+	float output;
+	err = (angle_ref - angle);
+	float P = err * kp;
+	integral_angle_d += err*dt;
+	float I = ki * integral_angle_d;
+	output = (P + I);
+	return output;
 }
 
-static int8_t CDC_Receive_FS(uint8_t Buf, uint32_t *Len)
+float PID_Controller_Speed(float speed_ref, float speed_now)
 {
-	usb_rx_length = (*Len < 64) ? *Len : 64;
-	memcpy(usb_rx_buffer, Buf, usb_rx_length);
-	usb_rx_flag = 1;
-
-	return USBD_OK;
+	float err;
+	float output;
+	err = (speed_ref - speed_now);
+	float P = err * kp_speed;
+	integral_speed_d += err*dt;
+	float I = ki_speed * integral_speed_d;
+	output = (P + I);
+	return output;
 }
+
 
 void DWT_Init(void) {
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
@@ -214,28 +198,82 @@ void DWT_Delay_us(uint32_t us) {
     while ((DWT->CYCCNT - start) < ticks);
 }
 
-void alignSensor()
-{
-    phasa = foc_direct(0.0f, 1.0f, 3.0f * M_PI / 2.0f, &htim1);
-    HAL_Delay(700);
-    SensorUpdate();
-    zero_electric_angle = 0;
-    zero_electric_angle = electricalAngle();
-    HAL_Delay(20);
-    phasa = foc_direct(0.0f, 0.0f, 0.0f, &htim1);
-    HAL_Delay(100);
-}
 void loopFOC()
 {
 	SensorUpdate();
     angle_el = electricalAngle();
 	HAL_ADC_Start(&hadc1);
 	HAL_ADC_Start(&hadc2);
+	HAL_ADC_Start(&hadc3);
 	adc1 = HAL_ADC_GetValue(&hadc1);
 	adc2 = HAL_ADC_GetValue(&hadc2);
+	adc3 = HAL_ADC_GetValue(&hadc3);
     current = foc_callback(adc1, adc2, angle_el);
     float id_ref = 0.0f;
-    float iq_ref = 2.0f;
+    iq_ref = (adc3/4095.0f - 0.5) * 20.0f;
+    vd = PI_Controller_Id(id_ref, current.id_callback);
+    vq = PI_Controller_Iq(iq_ref, current.iq_callback);
+    /*if (vq > 1.0f) vq = 1.0f;
+    if (vq < -1.0f) vq = -1.0f;
+    if (vd > 1.0f) vd = 1.0f;
+    if (vd < -1.0f) vd = -1.0f;*/
+    phasa = foc_direct(vd, vq, angle_el , &htim1);
+}
+
+void angle_position_FOC()
+{
+	SensorUpdate();
+    angle_el = electricalAngle();
+	HAL_ADC_Start(&hadc1);
+	HAL_ADC_Start(&hadc2);
+	HAL_ADC_Start(&hadc3);
+	adc1 = HAL_ADC_GetValue(&hadc1);
+	adc2 = HAL_ADC_GetValue(&hadc2);
+	adc3 = HAL_ADC_GetValue(&hadc3);
+	//angle_ref = (adc3/4095.0f - 0.5) * 2.0f * M_PI;
+	angle_ref = 0.0;
+	//angle_now = -kalman_angle;
+	angle_now = NowAngle();
+    current = foc_callback(adc1, adc2, angle_el);
+    float id_ref = 0.0f;
+    iq_ref = PID_Controller_Angle(angle_ref, angle_now);
+    if (iq_ref > 9.5f) iq_ref = 9.5f;
+    if (iq_ref < -9.5f) iq_ref = -9.5f;
+    vd = PI_Controller_Id(id_ref, current.id_callback);
+    vq = PI_Controller_Iq(iq_ref, current.iq_callback);
+    phasa = foc_direct(vd, vq, angle_el , &htim1);
+}
+
+void speed_control_FOC()
+{
+	SensorUpdate();
+    angle_el = electricalAngle();
+	HAL_ADC_Start(&hadc1);
+	HAL_ADC_Start(&hadc2);
+	HAL_ADC_Start(&hadc3);
+	adc1 = HAL_ADC_GetValue(&hadc1);
+	adc2 = HAL_ADC_GetValue(&hadc2);
+	adc3 = HAL_ADC_GetValue(&hadc3);
+	angle_ref = 0.0;
+	//angle_now = -kalman_angle;
+
+
+    angle_now = -kalman_angle;
+    speed_ref = PID_Controller_Angle(angle_ref, angle_now);
+
+    float mecAngleNum   = AS5048_ReadAngle() / 8192.0f * 360.0f;
+    float angle_rad = mecAngleNum * M_PI / 180.0f;
+
+    float delta_angle = angle_rad - prev_angle;
+    prev_angle = angle_rad;
+    speed = (delta_angle/dt) / (2.0 * M_PI);
+    iq_ref = PID_Controller_Speed(speed_ref, speed);
+    current = foc_callback(adc1, adc2, angle_el);
+
+
+    if (iq_ref > 9.5f) iq_ref = 9.5f;
+    if (iq_ref < -9.5f) iq_ref = -9.5f;
+    float id_ref = 0.0f;
     vd = PI_Controller_Id(id_ref, current.id_callback);
     vq = PI_Controller_Iq(iq_ref, current.iq_callback);
     phasa = foc_direct(vd, vq, angle_el , &htim1);
@@ -256,7 +294,7 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
+                                                                                                                                                                                                                              HAL_Init();
 
   /* USER CODE BEGIN Init */
 
@@ -277,15 +315,17 @@ int main(void)
   MX_TIM1_Init();
   MX_ADC3_Init();
   MX_SPI1_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
 
-  uint32_t last_tick = 0;
+
   uint32_t last_tick1 = 0;
   DWT_Init();
+  MPU6050_Init(&MPU6050);
   Sensor_Init();
   alignSensor();
   //resetCurrentPIDIntegrators();
@@ -296,57 +336,18 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  	  	/*SensorUpdate();
-		  	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, GPIO_PIN_RESET);
-			last_tick = HAL_GetTick();
-			mechDeg = mech_angle * 180.0f / M_PI;
-			elecDeg = elec_angle * 180.0f / M_PI;
-			HAL_ADC_Start(&hadc1);
-			HAL_ADC_Start(&hadc2);
-		    HAL_ADC_Start(&hadc3);
-			adc1 = HAL_ADC_GetValue(&hadc1);
-			adc2 = HAL_ADC_GetValue(&hadc2);
-			//adc3 = HAL_ADC_GetValue(&hadc3);
-			Kp = adc3/4095.0f;
-			float iq_ref = 12.0f;
-			//Kp_d = adc3/4095.0f;
 
-			current = foc_callback(adc1, adc2, angle_electric_rad);
-
-
-			float id_ref = 0.0f;
-			iq = PI_Controller_Iq(iq_ref, current.iq_callback);
-		    id = PI_Controller_Id(id_ref, current.id_callback);
-
-			phasa = foc_direct(id_ref, iq_ref, elec_angle, &htim1);
-			char buffer[48]; // буфер для строки
-			int len = sprintf(buffer, "%.3f;%.3f\r\n", id,iq);
-			send_usb_message(buffer);
-
-			/*if(usb_rx_flag)
-			{
-				usb_rx_flag = 0;
-				HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2, GPIO_PIN_SET);
-				HAL_Delay(100);
-			}*/
 			  if (HAL_GetTick() - last_tick >= 1)
 			 	  {
 				  last_tick = HAL_GetTick();
-		  loopFOC();
-
-			 	  }
-
-
-		/*last_tick = HAL_GetTick();
-		angle = AS5048_ReadAngle();
-		char buffer[48]; // буфер для строки
-		int len = sprintf(buffer, "%.3f;%.3f\r\n",
-		                  current.value1,
-		                  current.value2);
-	    send_usb_message(buffer);*/
-		//
-
-	//		DWT_Delay_us(1);
+				  MPU6050_Read_Gyro(&MPU6050);
+				  kalman_angle = MPU6050.KalmanAngleY * M_PI / 180.0;
+				  dt = (float) (HAL_GetTick() - timer1) / 1000;
+				  timer1 = HAL_GetTick();
+				  speed_control_FOC();
+			 	 }
+	  //loopFOC();
+		//DWT_Delay_us(1);
 
     /* USER CODE END WHILE */
 
@@ -354,7 +355,6 @@ int main(void)
   /* USER CODE END 3 */
 }
 }
-
 /**
   * @brief System Clock Configuration
   * @retval None
@@ -553,6 +553,40 @@ static void MX_ADC3_Init(void)
   /* USER CODE BEGIN ADC3_Init 2 */
 
   /* USER CODE END ADC3_Init 2 */
+
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
 
 }
 
